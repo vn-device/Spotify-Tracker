@@ -32,6 +32,7 @@ console = Console()
 
 
 def generate_pkce_pair():
+    # Cryptographically secure random bytes for PKCE verifier
     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(40)).rstrip(b"=").decode("ascii")
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -57,6 +58,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"<html><body><h1>Authentication complete.</h1><p>You can close this window.</p></body></html>")
 
     def log_message(self, format, *args):
+        # Suppress standard HTTP server logging
         return
 
 
@@ -138,7 +140,6 @@ def load_tokens():
 def ensure_token(client_id: str):
     tokens = load_tokens()
     if tokens:
-        # naive expiry handling
         if tokens.get("expires_at", 0) > time.time() + 60:
             return tokens
         if "refresh_token" in tokens:
@@ -176,19 +177,28 @@ def fetch_top_artists(access_token: str, limit: int = 50):
 
 
 def display_tracks(tracks):
-    table = Table(title="Top Tracks — Past 4 Weeks")
-    table.add_column("#", style="bold")
-    table.add_column("Title")
-    table.add_column("Artists")
-    table.add_column("Album")
-    table.add_column("Duration")
+    table = Table(title="Top Tracks — Past 4 Weeks", show_header=True, header_style="bold magenta")
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Title", style="bold green")
+    table.add_column("Artists", style="cyan")
+    table.add_column("Album", style="italic yellow")
+    table.add_column("Duration", justify="right")
+    
     for i, t in enumerate(tracks, 1):
-        name = t.get("name")
+        name = t.get("name", "Unknown")
+        url = t.get("external_urls", {}).get("spotify", "")
+        
+        # Format title as an OSC 8 hyperlink
+        name_display = f"[link={url}]{name}[/link]" if url else name
+        
         artists = ", ".join(a.get("name") for a in t.get("artists", []))
         album = t.get("album", {}).get("name", "")
+        
         dur_ms = t.get("duration_ms", 0)
         dur = f"{int(dur_ms/60000)}:{int(dur_ms/1000)%60:02d}"
-        table.add_row(str(i), name, artists, album, dur)
+        
+        table.add_row(str(i), name_display, artists, album, dur)
+        
     console.print(table)
 
 
@@ -210,25 +220,35 @@ def export_artists_csv(artists, out_path: Path):
 
     with out_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["rank", "name", "genres", "popularity", "spotify_url"])
+        w.writerow(["rank", "name", "spotify_url"])
         for i, a in enumerate(artists, 1):
             url = a.get("external_urls", {}).get("spotify", "")
-            genres = ", ".join(a.get("genres", []))
-            w.writerow([i, a.get("name"), genres, a.get("popularity", 0), url])
+            w.writerow([i, a.get("name"), url])
     console.print(f"Exported CSV to {out_path}")
 
 
 def display_artists(artists):
-    table = Table(title="Top Artists — Past 4 Weeks")
-    table.add_column("#", style="bold")
-    table.add_column("Name")
-    table.add_column("Genres")
-    table.add_column("Popularity")
+    table = Table(title="Top Artists — Past 4 Weeks", show_header=True, header_style="bold magenta")
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Name", style="bold green")
+    table.add_column("Followers", style="cyan", justify="right")
+    table.add_column("Popularity", justify="left")
+    
     for i, a in enumerate(artists, 1):
-        name = a.get("name")
-        genres = ", ".join(a.get("genres", [])[:3])
-        popularity = str(a.get("popularity", ""))
-        table.add_row(str(i), name, genres, popularity)
+        name = a.get("name", "Unknown")
+        url = a.get("external_urls", {}).get("spotify", "")
+        
+        name_display = f"[link={url}]{name}[/link]" if url else name
+        
+        followers = f"{a.get('followers', {}).get('total', 0):,}"
+        
+        pop = a.get("popularity", 0)
+        filled = int(pop / 10)
+        bar = ("[yellow]" + ("█" * filled) + "[/yellow]") + ("[dim]" + ("░" * (10 - filled)) + "[/dim]")
+        pop_display = f"{bar} {pop:02d}%"
+        
+        table.add_row(str(i), name_display, followers, pop_display)
+        
     console.print(table)
 
 
