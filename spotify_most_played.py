@@ -21,6 +21,7 @@ load_dotenv()
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_TOP_TRACKS = "https://api.spotify.com/v1/me/top/tracks"
+API_TOP_ARTISTS = "https://api.spotify.com/v1/me/top/artists"
 REDIRECT_URI = os.environ.get("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8080/callback")
 SCOPE = "user-top-read"
 
@@ -166,6 +167,14 @@ def fetch_top_tracks(access_token: str, limit: int = 50):
     return r.json().get("items", [])
 
 
+def fetch_top_artists(access_token: str, limit: int = 50):
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"limit": min(limit, 50), "time_range": "short_term"}
+    r = requests.get(API_TOP_ARTISTS, headers=headers, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json().get("items", [])
+
+
 def display_tracks(tracks):
     table = Table(title="Top Tracks — Past 4 Weeks")
     table.add_column("#", style="bold")
@@ -196,9 +205,39 @@ def export_csv(tracks, out_path: Path):
     console.print(f"Exported CSV to {out_path}")
 
 
+def export_artists_csv(artists, out_path: Path):
+    import csv
+
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["rank", "name", "genres", "popularity", "spotify_url"])
+        for i, a in enumerate(artists, 1):
+            url = a.get("external_urls", {}).get("spotify", "")
+            genres = ", ".join(a.get("genres", []))
+            w.writerow([i, a.get("name"), genres, a.get("popularity", 0), url])
+    console.print(f"Exported CSV to {out_path}")
+
+
+def display_artists(artists):
+    table = Table(title="Top Artists — Past 4 Weeks")
+    table.add_column("#", style="bold")
+    table.add_column("Name")
+    table.add_column("Genres")
+    table.add_column("Popularity")
+    for i, a in enumerate(artists, 1):
+        name = a.get("name")
+        genres = ", ".join(a.get("genres", [])[:3])
+        popularity = str(a.get("popularity", ""))
+        table.add_row(str(i), name, genres, popularity)
+    console.print(table)
+
+
 def main():
     p = argparse.ArgumentParser(description="Spotify — Most Played Past 4 Weeks")
-    p.add_argument("--limit", type=int, default=20, help="Number of tracks to show (max 50)")
+    p.add_argument("--limit", type=int, default=20, help="Number of items to show (max 50)")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--artists", action="store_true", help="Show top artists")
+    group.add_argument("--songs", action="store_true", help="Show top songs (tracks)")
     p.add_argument("--export", type=str, help="Export results to CSV file path")
     args = p.parse_args()
 
@@ -208,10 +247,19 @@ def main():
         raise SystemExit(1)
 
     tokens = ensure_token(client_id)
-    tracks = fetch_top_tracks(tokens.get("access_token"), limit=args.limit)
-    display_tracks(tracks)
-    if args.export:
-        export_csv(tracks, Path(args.export))
+    if args.artists:
+        artists = fetch_top_artists(tokens.get("access_token"), limit=args.limit)
+        display_artists(artists)
+        if args.export:
+            export_artists_csv(artists, Path(args.export))
+    elif args.songs:
+        tracks = fetch_top_tracks(tokens.get("access_token"), limit=args.limit)
+        display_tracks(tracks)
+        if args.export:
+            export_csv(tracks, Path(args.export))
+    else:
+        p.print_help()
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

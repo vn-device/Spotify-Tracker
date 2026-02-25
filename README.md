@@ -49,3 +49,17 @@ Notes
 
 - This app uses Spotify's Authorization Code with PKCE flow. No client secret is required.
 - Tokens are stored at the path in `SPOTIFY_TOKEN_PATH` or default `~/.spotify_most_played.json`.
+
+Usage examples
+
+- Top songs:
+
+```bash
+python spotify_most_played.py --songs --limit 10
+```
+
+- Top artists:
+
+```bash
+python spotify_most_played.py --artists --limit 10
+```
