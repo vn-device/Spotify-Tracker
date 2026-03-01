@@ -18,6 +18,7 @@ from rich.table import Table
 
 load_dotenv()
 
+# Official Spotify Web API Endpoints
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_TOP_TRACKS = "https://api.spotify.com/v1/me/top/tracks"
@@ -34,6 +35,7 @@ console = Console()
 def generate_pkce_pair():
     # Cryptographically secure random bytes for PKCE verifier
     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(40)).rstrip(b"=").decode("ascii")
+    # SHA256 digest required by OAuth 2.0 PKCE specification to prevent authorization code interception
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return code_verifier, code_challenge
@@ -58,7 +60,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"<html><body><h1>Authentication complete.</h1><p>You can close this window.</p></body></html>")
 
     def log_message(self, format, *args):
-        # Suppress standard HTTP server logging
+        # Suppress standard HTTP server logging to prevent terminal output pollution
         return
 
 
@@ -202,31 +204,6 @@ def display_tracks(tracks):
     console.print(table)
 
 
-def export_csv(tracks, out_path: Path):
-    import csv
-
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["rank", "title", "artists", "album", "duration_ms", "spotify_url"])
-        for i, t in enumerate(tracks, 1):
-            url = t.get("external_urls", {}).get("spotify", "")
-            artists = ", ".join(a.get("name") for a in t.get("artists", []))
-            w.writerow([i, t.get("name"), artists, t.get("album", {}).get("name", ""), t.get("duration_ms", 0), url])
-    console.print(f"Exported CSV to {out_path}")
-
-
-def export_artists_csv(artists, out_path: Path):
-    import csv
-
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["rank", "name", "spotify_url"])
-        for i, a in enumerate(artists, 1):
-            url = a.get("external_urls", {}).get("spotify", "")
-            w.writerow([i, a.get("name"), url])
-    console.print(f"Exported CSV to {out_path}")
-
-
 def display_artists(artists):
     table = Table(title="Top Artists — Past 4 Weeks", show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=3, justify="right")
@@ -240,7 +217,9 @@ def display_artists(artists):
         
         name_display = f"[link={url}]{name}[/link]" if url else name
         
-        followers = f"{a.get('followers', {}).get('total', 0):,}"
+        # Hardened dict lookup: safeguards against explicit 'null' values from API
+        followers_data = a.get("followers") or {}
+        followers = f"{followers_data.get('total', 0):,}"
         
         pop = a.get("popularity", 0)
         filled = int(pop / 10)
@@ -254,11 +233,10 @@ def display_artists(artists):
 
 def main():
     p = argparse.ArgumentParser(description="Spotify — Most Played Past 4 Weeks")
-    p.add_argument("--limit", type=int, default=20, help="Number of items to show (max 50)")
+    p.add_argument("--limit", type=int, default=1, help="Number of items to show (max 50)")
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--artists", action="store_true", help="Show top artists")
     group.add_argument("--songs", action="store_true", help="Show top songs (tracks)")
-    p.add_argument("--export", type=str, help="Export results to CSV file path")
     args = p.parse_args()
 
     client_id = os.environ.get("SPOTIFY_CLIENT_ID")
@@ -270,13 +248,9 @@ def main():
     if args.artists:
         artists = fetch_top_artists(tokens.get("access_token"), limit=args.limit)
         display_artists(artists)
-        if args.export:
-            export_artists_csv(artists, Path(args.export))
     elif args.songs:
         tracks = fetch_top_tracks(tokens.get("access_token"), limit=args.limit)
         display_tracks(tracks)
-        if args.export:
-            export_csv(tracks, Path(args.export))
     else:
         p.print_help()
         raise SystemExit(1)
