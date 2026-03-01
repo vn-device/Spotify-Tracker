@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import tempfile
 import threading
 import time
 import webbrowser
@@ -18,7 +19,6 @@ from rich.table import Table
 
 load_dotenv()
 
-# Official Spotify Web API Endpoints
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_TOP_TRACKS = "https://api.spotify.com/v1/me/top/tracks"
@@ -31,11 +31,16 @@ TOKEN_PATH = Path(_default_token_path).expanduser()
 
 console = Console()
 
+# Mapping CLI arguments to Spotify API time_range parameters and human-readable UI labels.
+TIME_RANGE_MAP = {
+    "short": {"api": "short_term", "label": "Past 4 Weeks"},
+    "medium": {"api": "medium_term", "label": "Past 6 Months"},
+    "long": {"api": "long_term", "label": "All Time"},
+}
+
 
 def generate_pkce_pair():
-    # Cryptographically secure random bytes for PKCE verifier
     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(40)).rstrip(b"=").decode("ascii")
-    # SHA256 digest required by OAuth 2.0 PKCE specification to prevent authorization code interception
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return code_verifier, code_challenge
@@ -60,7 +65,6 @@ class OAuthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"<html><body><h1>Authentication complete.</h1><p>You can close this window.</p></body></html>")
 
     def log_message(self, format, *args):
-        # Suppress standard HTTP server logging to prevent terminal output pollution
         return
 
 
@@ -162,24 +166,24 @@ def ensure_token(client_id: str):
     return token_resp
 
 
-def fetch_top_tracks(access_token: str, limit: int = 50):
+def fetch_top_tracks(access_token: str, limit: int = 50, time_range: str = "short_term"):
     headers = {"Authorization": f"Bearer {access_token}"}
-    params = {"limit": min(limit, 50), "time_range": "short_term"}
+    params = {"limit": min(limit, 50), "time_range": time_range}
     r = requests.get(API_TOP_TRACKS, headers=headers, params=params, timeout=10)
     r.raise_for_status()
     return r.json().get("items", [])
 
 
-def fetch_top_artists(access_token: str, limit: int = 50):
+def fetch_top_artists(access_token: str, limit: int = 50, time_range: str = "short_term"):
     headers = {"Authorization": f"Bearer {access_token}"}
-    params = {"limit": min(limit, 50), "time_range": "short_term"}
+    params = {"limit": min(limit, 50), "time_range": time_range}
     r = requests.get(API_TOP_ARTISTS, headers=headers, params=params, timeout=10)
     r.raise_for_status()
     return r.json().get("items", [])
 
 
-def display_tracks(tracks):
-    table = Table(title="Top Tracks — Past 4 Weeks", show_header=True, header_style="bold magenta")
+def display_tracks_terminal(tracks, time_label: str):
+    table = Table(title=f"Top Tracks — {time_label}", show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Title", style="bold green")
     table.add_column("Artists", style="cyan")
@@ -190,7 +194,6 @@ def display_tracks(tracks):
         name = t.get("name", "Unknown")
         url = t.get("external_urls", {}).get("spotify", "")
         
-        # Format title as an OSC 8 hyperlink
         name_display = f"[link={url}]{name}[/link]" if url else name
         
         artists = ", ".join(a.get("name") for a in t.get("artists", []))
@@ -204,8 +207,8 @@ def display_tracks(tracks):
     console.print(table)
 
 
-def display_artists(artists):
-    table = Table(title="Top Artists — Past 4 Weeks", show_header=True, header_style="bold magenta")
+def display_artists_terminal(artists, time_label: str):
+    table = Table(title=f"Top Artists — {time_label}", show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Name", style="bold green")
     table.add_column("Followers", style="cyan", justify="right")
@@ -217,7 +220,6 @@ def display_artists(artists):
         
         name_display = f"[link={url}]{name}[/link]" if url else name
         
-        # Hardened dict lookup: safeguards against explicit 'null' values from API
         followers_data = a.get("followers") or {}
         followers = f"{followers_data.get('total', 0):,}"
         
@@ -231,9 +233,109 @@ def display_artists(artists):
     console.print(table)
 
 
+def cleanup_temp_file(path: str, delay_seconds: int = 3):
+    time.sleep(delay_seconds)
+    try:
+        os.unlink(path)
+    except OSError as e:
+        console.print(f"[dim red]Failed to delete temp file {path}: {e}[/dim red]")
+
+
+def display_in_browser(data, item_type, time_label: str):
+    html_template = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Spotify Top Stats</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #121212; color: #ffffff; padding: 40px; }}
+            h1 {{ color: #1DB954; margin-bottom: 5px; }}
+            h3 {{ color: #b3b3b3; margin-top: 0; margin-bottom: 25px; font-weight: normal; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+            th, td {{ padding: 12px; border-bottom: 1px solid #282828; text-align: left; }}
+            th {{ text-transform: uppercase; font-size: 12px; color: #b3b3b3; letter-spacing: 1px; }}
+            a {{ color: #ffffff; text-decoration: none; font-weight: bold; }}
+            a:hover {{ color: #1DB954; text-decoration: underline; }}
+            .subtext {{ color: #b3b3b3; font-size: 14px; }}
+            .bar-container {{ background-color: #333; width: 100px; height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; margin-right: 10px; }}
+            .bar-fill {{ background-color: #1DB954; height: 100%; border-radius: 4px; }}
+        </style>
+    </head>
+    <body>
+        <h1>Your Top {title}</h1>
+        <h3>{time_label}</h3>
+        <table>
+            {headers}
+            {rows}
+        </table>
+    </body>
+    </html>
+    """
+    
+    headers = ""
+    rows = ""
+    
+    if item_type == "artists":
+        headers = "<tr><th>#</th><th>Artist</th><th>Followers</th><th>Popularity</th></tr>"
+        for i, a in enumerate(data, 1):
+            name = a.get("name", "Unknown")
+            url = a.get("external_urls", {}).get("spotify", "#")
+            followers = f"{a.get('followers', {}).get('total', 0):,}"
+            pop = a.get("popularity", 0)
+            rows += f"""
+                <tr>
+                    <td>{i}</td>
+                    <td><a href="{url}" target="_blank">{name}</a></td>
+                    <td class="subtext">{followers}</td>
+                    <td>
+                        <div class="bar-container"><div class="bar-fill" style="width: {pop}%;"></div></div>
+                        <span class="subtext">{pop}%</span>
+                    </td>
+                </tr>
+            """
+    else:
+        headers = "<tr><th>#</th><th>Title</th><th>Artists</th><th>Album</th><th>Duration</th></tr>"
+        for i, t in enumerate(data, 1):
+            name = t.get("name", "Unknown")
+            url = t.get("external_urls", {}).get("spotify", "#")
+            artists = ", ".join(a.get("name") for a in t.get("artists", []))
+            album = t.get("album", {}).get("name", "")
+            dur_ms = t.get("duration_ms", 0)
+            dur = f"{int(dur_ms/60000)}:{int(dur_ms/1000)%60:02d}"
+            rows += f"""
+                <tr>
+                    <td>{i}</td>
+                    <td><a href="{url}" target="_blank">{name}</a></td>
+                    <td class="subtext">{artists}</td>
+                    <td class="subtext">{album}</td>
+                    <td class="subtext">{dur}</td>
+                </tr>
+            """
+
+    final_html = html_template.format(
+        title="Artists" if item_type == "artists" else "Tracks",
+        time_label=time_label,
+        headers=headers,
+        rows=rows
+    )
+
+    fd, path = tempfile.mkstemp(suffix=".html", prefix="spotify_stats_")
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(final_html)
+    
+    webbrowser.open(f"file://{path}")
+    console.print(f"Opened report in your web browser. Cleaning up temporary files...")
+
+    threading.Thread(target=cleanup_temp_file, args=(path, 3)).start()
+
+
 def main():
-    p = argparse.ArgumentParser(description="Spotify — Most Played Past 4 Weeks")
+    p = argparse.ArgumentParser(description="Spotify — Most Played")
     p.add_argument("--limit", type=int, default=1, help="Number of items to show (max 50)")
+    p.add_argument("--display", action="store_true", help="Display results in a web browser instead of the terminal")
+    p.add_argument("--time", type=str, choices=["short", "medium", "long"], default="short", help="Time range: short (4 weeks), medium (6 months), long (all time)")
+    
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--artists", action="store_true", help="Show top artists")
     group.add_argument("--songs", action="store_true", help="Show top songs (tracks)")
@@ -244,13 +346,23 @@ def main():
         console.print("Please set the SPOTIFY_CLIENT_ID environment variable and register the redirect URI.")
         raise SystemExit(1)
 
+    time_config = TIME_RANGE_MAP[args.time]
+    api_time_range = time_config["api"]
+    time_label = time_config["label"]
+
     tokens = ensure_token(client_id)
     if args.artists:
-        artists = fetch_top_artists(tokens.get("access_token"), limit=args.limit)
-        display_artists(artists)
+        artists = fetch_top_artists(tokens.get("access_token"), limit=args.limit, time_range=api_time_range)
+        if args.display:
+            display_in_browser(artists, "artists", time_label)
+        else:
+            display_artists_terminal(artists, time_label)
     elif args.songs:
-        tracks = fetch_top_tracks(tokens.get("access_token"), limit=args.limit)
-        display_tracks(tracks)
+        tracks = fetch_top_tracks(tokens.get("access_token"), limit=args.limit, time_range=api_time_range)
+        if args.display:
+            display_in_browser(tracks, "songs", time_label)
+        else:
+            display_tracks_terminal(tracks, time_label)
     else:
         p.print_help()
         raise SystemExit(1)
