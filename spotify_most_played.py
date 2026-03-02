@@ -1,4 +1,3 @@
-import argparse
 import base64
 import hashlib
 import json
@@ -16,9 +15,11 @@ import requests
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+from rich.prompt import Prompt, IntPrompt, Confirm
 
 load_dotenv()
 
+# Real Spotify Web API Endpoints
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_TOP_TRACKS = "https://api.spotify.com/v1/me/top/tracks"
@@ -31,7 +32,6 @@ TOKEN_PATH = Path(_default_token_path).expanduser()
 
 console = Console()
 
-# Mapping CLI arguments to Spotify API time_range parameters and human-readable UI labels.
 TIME_RANGE_MAP = {
     "short": {"api": "short_term", "label": "Past 4 Weeks"},
     "medium": {"api": "medium_term", "label": "Past 6 Months"},
@@ -207,28 +207,29 @@ def display_tracks_terminal(tracks, time_label: str):
     console.print(table)
 
 
-def display_artists_terminal(artists, time_label: str):
+def display_artists_terminal(artists, tracks, time_label: str):
+    # Cross-reference user's top tracks to find highest ranked song per artist
+    top_track_map = {}
+    for t in tracks:
+        track_name = t.get("name", "Unknown")
+        for artist in t.get("artists", []):
+            artist_name = artist.get("name")
+            if artist_name and artist_name not in top_track_map:
+                top_track_map[artist_name] = track_name
+
     table = Table(title=f"Top Artists — {time_label}", show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Name", style="bold green")
-    table.add_column("Followers", style="cyan", justify="right")
-    table.add_column("Popularity", justify="left")
+    table.add_column("Your Top Song", style="italic yellow")
     
     for i, a in enumerate(artists, 1):
         name = a.get("name", "Unknown")
         url = a.get("external_urls", {}).get("spotify", "")
         
         name_display = f"[link={url}]{name}[/link]" if url else name
+        top_song = top_track_map.get(name, "N/A")
         
-        followers_data = a.get("followers") or {}
-        followers = f"{followers_data.get('total', 0):,}"
-        
-        pop = a.get("popularity", 0)
-        filled = int(pop / 10)
-        bar = ("[yellow]" + ("█" * filled) + "[/yellow]") + ("[dim]" + ("░" * (10 - filled)) + "[/dim]")
-        pop_display = f"{bar} {pop:02d}%"
-        
-        table.add_row(str(i), name_display, followers, pop_display)
+        table.add_row(str(i), name_display, top_song)
         
     console.print(table)
 
@@ -241,7 +242,7 @@ def cleanup_temp_file(path: str, delay_seconds: int = 3):
         console.print(f"[dim red]Failed to delete temp file {path}: {e}[/dim red]")
 
 
-def display_in_browser(data, item_type, time_label: str):
+def display_in_browser(data, item_type, time_label: str, cross_ref_tracks=None):
     html_template = """
     <!DOCTYPE html>
     <html lang="en">
@@ -253,13 +254,14 @@ def display_in_browser(data, item_type, time_label: str):
             h1 {{ color: #1DB954; margin-bottom: 5px; }}
             h3 {{ color: #b3b3b3; margin-top: 0; margin-bottom: 25px; font-weight: normal; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-            th, td {{ padding: 12px; border-bottom: 1px solid #282828; text-align: left; }}
+            th, td {{ padding: 12px; border-bottom: 1px solid #282828; text-align: left; vertical-align: middle; }}
             th {{ text-transform: uppercase; font-size: 12px; color: #b3b3b3; letter-spacing: 1px; }}
             a {{ color: #ffffff; text-decoration: none; font-weight: bold; }}
             a:hover {{ color: #1DB954; text-decoration: underline; }}
-            .subtext {{ color: #b3b3b3; font-size: 14px; }}
-            .bar-container {{ background-color: #333; width: 100px; height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; margin-right: 10px; }}
-            .bar-fill {{ background-color: #1DB954; height: 100%; border-radius: 4px; }}
+            .subtext {{ color: #b3b3b3; font-size: 14px; text-transform: capitalize; }}
+            .thumb-artist {{ width: 48px; height: 48px; border-radius: 50%; object-fit: cover; display: block; }}
+            .thumb-track {{ width: 48px; height: 48px; border-radius: 4px; object-fit: cover; display: block; }}
+            .img-cell {{ width: 60px; text-align: center; }}
         </style>
     </head>
     <body>
@@ -277,25 +279,36 @@ def display_in_browser(data, item_type, time_label: str):
     rows = ""
     
     if item_type == "artists":
-        headers = "<tr><th>#</th><th>Artist</th><th>Followers</th><th>Popularity</th></tr>"
+        top_track_map = {}
+        if cross_ref_tracks:
+            for t in cross_ref_tracks:
+                track_name = t.get("name", "Unknown")
+                for artist in t.get("artists", []):
+                    artist_name = artist.get("name")
+                    if artist_name and artist_name not in top_track_map:
+                        top_track_map[artist_name] = track_name
+
+        headers = "<tr><th>#</th><th class='img-cell'></th><th>Artist</th><th>Your Top Song</th></tr>"
         for i, a in enumerate(data, 1):
             name = a.get("name", "Unknown")
             url = a.get("external_urls", {}).get("spotify", "#")
-            followers = f"{a.get('followers', {}).get('total', 0):,}"
-            pop = a.get("popularity", 0)
+            
+            top_song = top_track_map.get(name, "N/A")
+            
+            images = a.get("images", [])
+            image_url = images[-1].get("url", "") if images else ""
+            img_tag = f'<img src="{image_url}" class="thumb-artist" alt="{name}">' if image_url else ""
+            
             rows += f"""
                 <tr>
                     <td>{i}</td>
+                    <td class="img-cell">{img_tag}</td>
                     <td><a href="{url}" target="_blank">{name}</a></td>
-                    <td class="subtext">{followers}</td>
-                    <td>
-                        <div class="bar-container"><div class="bar-fill" style="width: {pop}%;"></div></div>
-                        <span class="subtext">{pop}%</span>
-                    </td>
+                    <td class="subtext">{top_song}</td>
                 </tr>
             """
     else:
-        headers = "<tr><th>#</th><th>Title</th><th>Artists</th><th>Album</th><th>Duration</th></tr>"
+        headers = "<tr><th>#</th><th class='img-cell'></th><th>Title</th><th>Artists</th><th>Album</th><th>Duration</th></tr>"
         for i, t in enumerate(data, 1):
             name = t.get("name", "Unknown")
             url = t.get("external_urls", {}).get("spotify", "#")
@@ -303,9 +316,15 @@ def display_in_browser(data, item_type, time_label: str):
             album = t.get("album", {}).get("name", "")
             dur_ms = t.get("duration_ms", 0)
             dur = f"{int(dur_ms/60000)}:{int(dur_ms/1000)%60:02d}"
+            
+            images = t.get("album", {}).get("images", [])
+            image_url = images[-1].get("url", "") if images else ""
+            img_tag = f'<img src="{image_url}" class="thumb-track" alt="{album}">' if image_url else ""
+            
             rows += f"""
                 <tr>
                     <td>{i}</td>
+                    <td class="img-cell">{img_tag}</td>
                     <td><a href="{url}" target="_blank">{name}</a></td>
                     <td class="subtext">{artists}</td>
                     <td class="subtext">{album}</td>
@@ -331,41 +350,49 @@ def display_in_browser(data, item_type, time_label: str):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Spotify — Most Played")
-    p.add_argument("--limit", type=int, default=1, help="Number of items to show (max 50)")
-    p.add_argument("--display", action="store_true", help="Display results in a web browser instead of the terminal")
-    p.add_argument("--time", type=str, choices=["short", "medium", "long"], default="short", help="Time range: short (4 weeks), medium (6 months), long (all time)")
-    
-    group = p.add_mutually_exclusive_group(required=True)
-    group.add_argument("--artists", action="store_true", help="Show top artists")
-    group.add_argument("--songs", action="store_true", help="Show top songs (tracks)")
-    args = p.parse_args()
-
     client_id = os.environ.get("SPOTIFY_CLIENT_ID")
     if not client_id:
-        console.print("Please set the SPOTIFY_CLIENT_ID environment variable and register the redirect URI.")
+        console.print("[bold red]Error:[/bold red] Please set the SPOTIFY_CLIENT_ID environment variable and register the redirect URI.")
         raise SystemExit(1)
 
-    time_config = TIME_RANGE_MAP[args.time]
+    item_type = Prompt.ask(
+        "What would you like to view?", 
+        choices=["artists", "songs"], 
+        default="artists"
+    )
+    
+    time_choice = Prompt.ask(
+        "Select a time range (short=4 weeks, medium=6 months, long=all time)", 
+        choices=["short", "medium", "long"], 
+        default="short"
+    )
+    
+    limit = IntPrompt.ask("How many items to show? (1-50)", default=10)
+    limit = max(1, min(limit, 50))
+    
+    display_browser = Confirm.ask("Display results in a web browser?")
+
+    time_config = TIME_RANGE_MAP[time_choice]
     api_time_range = time_config["api"]
     time_label = time_config["label"]
 
     tokens = ensure_token(client_id)
-    if args.artists:
-        artists = fetch_top_artists(tokens.get("access_token"), limit=args.limit, time_range=api_time_range)
-        if args.display:
-            display_in_browser(artists, "artists", time_label)
+    
+    if item_type == "artists":
+        artists = fetch_top_artists(tokens.get("access_token"), limit=limit, time_range=api_time_range)
+        # Fetch max tracks strictly for the mapping algorithm
+        tracks_for_mapping = fetch_top_tracks(tokens.get("access_token"), limit=50, time_range=api_time_range)
+        
+        if display_browser:
+            display_in_browser(artists, "artists", time_label, cross_ref_tracks=tracks_for_mapping)
         else:
-            display_artists_terminal(artists, time_label)
-    elif args.songs:
-        tracks = fetch_top_tracks(tokens.get("access_token"), limit=args.limit, time_range=api_time_range)
-        if args.display:
+            display_artists_terminal(artists, tracks_for_mapping, time_label)
+    else:
+        tracks = fetch_top_tracks(tokens.get("access_token"), limit=limit, time_range=api_time_range)
+        if display_browser:
             display_in_browser(tracks, "songs", time_label)
         else:
             display_tracks_terminal(tracks, time_label)
-    else:
-        p.print_help()
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":
