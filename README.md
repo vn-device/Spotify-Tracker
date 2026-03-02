@@ -24,13 +24,15 @@ pip install -r requirements.txt
 ## Platform-Specific Activation & Run
 
 # Windows
-.venv\Scripts\Activate.ps1
-# set env for this session (or rely on .env file)
+```.venv\Scripts\Activate.ps1
+Note: set env for this session (or rely on .env file)
 $env:SPOTIFY_CLIENT_ID="your_client_id_here"
 python spotify_most_played.py
+```
 
 # Linux / macOS
-.venv/bin/activate
-# export env for this session (or rely on .env file)
+```.venv/bin/activate
+Note: export env for this session (or rely on .env file)
 export SPOTIFY_CLIENT_ID="your_client_id_here"
 python spotify_most_played.py
+```
